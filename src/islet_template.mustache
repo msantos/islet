@@ -1,0 +1,24 @@
+<domain type='lxc'>
+    <name>{{name}}</name>
+    <memory>{{memory}}</memory>
+    <description>{{description}}</description>
+    <os>
+        <type>exe</type>
+        <init>/init</init>
+    </os>
+    <devices>
+        <console type='pty'/>
+{{#interface}}
+        <interface type='bridge'>
+            <mac address='{{macaddr}}'/>
+            <source bridge='{{source}}'/>
+        </interface>
+{{/interface}}
+{{#filesystem}}
+        <filesystem type='mount'>
+            <source dir='{{source}}'/>
+            <target dir='{{target}}'/>
+        </filesystem>
+{{/filesystem}}
+    </devices>
+</domain>

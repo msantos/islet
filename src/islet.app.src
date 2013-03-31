@@ -1,0 +1,3 @@
+{application, islet,
+ [{description, "Manage isolated processes"},
+  {vsn, "0.1.0"}]}.
