@@ -35,6 +35,7 @@
 
 -export([
         start/0,
+        close/1,
         create/1, create/2,
         destroy/2,
 
@@ -59,6 +60,9 @@ start() ->
     {ok, Ref} = verx_client:start(),
     ok = verx:open(Ref, ["lxc:///", 0]),
     {ok, Ref}.
+
+close(Ref) ->
+    verx_client:close(Ref).
 
 create(Ref) ->
     create(Ref, []).

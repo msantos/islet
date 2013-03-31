@@ -9,8 +9,8 @@ create(N) ->
     {ok, Ref} = islet:start(),
     spinup(Ref, N).
 
-spinup(_Ref, 0) ->
-    ok;
+spinup(Ref, 0) ->
+    islet:close(Ref);
 spinup(Ref, N) ->
     Name = "atoll-" ++ integer_to_list(N),
     ok = islet:create(Ref, [
@@ -22,7 +22,13 @@ spinup(Ref, N) ->
 
 destroy(N) ->
     {ok, Ref} = islet:start(),
-    islet:destroy(Ref, "atoll-" ++ integer_to_list(N)).
+    destroy(Ref, N).
+
+destroy(Ref, 0) ->
+    islet:close(Ref);
+destroy(Ref, N) ->
+    islet:destroy(Ref, "atoll-" ++ integer_to_list(N)),
+    destroy(N-1).
 
 setup(Name) ->
     Default = islet:setup(Name),
