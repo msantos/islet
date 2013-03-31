@@ -27,7 +27,8 @@ destroy(N) ->
 setup(Name) ->
     Default = islet:setup(Name),
     Default ++ "
-cat<<'EOF'>/tmp/udhcpc.script
+mkdir /tmp/udhcpc
+cat<<'EOF'>/tmp/udhcpc/script
 #!/bin/static-sh
 
 env
@@ -56,8 +57,8 @@ case \"$1\" in
         ;;
 esac
 EOF
-chmod +x /tmp/udhcpc.script
-busybox udhcpc -s /tmp/udhcpc.script
+chmod +x /tmp/udhcpc/script
+busybox udhcpc -s /tmp/udhcpc/script
 ".
 
 islet() ->

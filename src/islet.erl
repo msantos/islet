@@ -301,6 +301,7 @@ init(Uid0, Setup) ->
     Uid = integer_to_list(Uid0),
 "#!/bin/sh
 set -e
+mount -t tmpfs -o noatime,mode=1777,nosuid,size=32M tmpfs /tmp
 " ++ Setup ++ "
 exec /sbin/start-stop-daemon --start --verbose --exec /islet --chuid " ++ Uid.
 
