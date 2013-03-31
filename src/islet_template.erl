@@ -28,11 +28,13 @@ filesystem(Ctx) ->
     Name = mustache:get(name, Ctx),
 
     Filesystems = [
-        {Path ++ "/" ++ Name ++ "/rootfs", "/"}
+        [{source, Path ++ "/" ++ Name ++ "/rootfs"},
+         {target, "/"},
+         {readonly, false}]
     ] ++ islet:filesystems(),
 
-    [ dict:from_list([{source, Source}, {target, Target}])
-        || {Source, Target} <- Filesystems ].
+    [ dict:from_list(proplists:unfold(FS))
+        || FS <- Filesystems ].
 
 readonly() ->
-    false.
+    true.

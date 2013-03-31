@@ -18,6 +18,9 @@
         <filesystem type='mount'>
             <source dir='{{source}}'/>
             <target dir='{{target}}'/>
+{{#readonly}}
+        <readonly/>
+{{/readonly}}
         </filesystem>
 {{/filesystem}}
     </devices>

@@ -116,7 +116,11 @@ template(Options) ->
 
     Iface = [ {Dev, islet:macaddr(Name ++ "-" ++ Dev)} || Dev <- interfaces() ],
 
-    Mount = [ {Path ++ "/" ++ Name ++ "/rootfs", "/"} ] ++ filesystems(),
+    Mount = [
+        [{source, Path ++ "/" ++ Name ++ "/rootfs"},
+         {target, "/"},
+         {readonly, false}]
+    ] ++ filesystems(),
 
     Interfaces = proplists:get_value(interfaces, Options, Iface),
     Filesystems = proplists:get_value(filesystems, Options, Mount),
@@ -127,8 +131,7 @@ template(Options) ->
         {memory, Memory},
         {interfaces, [ dict:from_list([{source, Source}, {macaddr, Address}])
                 || {Source, Address} <- Interfaces ]},
-        {filesystems, [ dict:from_list([{source, Source}, {target, Target}])
-                || {Source, Target} <- Filesystems ]}
+        {filesystems, [ dict:from_list(proplists:unfold(FS)) || FS <- Filesystems ]}
     ],
 
     Template = mustache:compile(islet_template),
@@ -270,11 +273,11 @@ interfaces() ->
 
 filesystems() ->
     [
-        {"/bin", "/bin"},
-        {"/sbin", "/sbin"},
-        {"/lib", "/lib"},
-        {"/lib64", "/lib64"},
-        {"/usr", "/usr"}
+        [{source, "/bin"}, {target, "/bin"}, readonly],
+        [{source, "/sbin"}, {target, "/sbin"}, readonly],
+        [{source, "/lib"}, {target, "/lib"}, readonly],
+        [{source, "/lib64"}, {target, "/lib64"}, readonly],
+        [{source, "/usr"}, {target, "/usr"}, readonly]
     ].
 
 uid(Min, Max) ->
