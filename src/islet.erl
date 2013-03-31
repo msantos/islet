@@ -47,6 +47,7 @@
 
         macaddr/1,
 
+        dirs/0,
         filesystems/0,
         setup/1
     ]).
@@ -81,7 +82,7 @@ create(Ref, Options0) ->
 
 destroy(Ref, Name) ->
     case verx:lookup(Ref, {domain, Name}) of
-        {ok, Domain} -> destroy_1(Ref, Domain);
+        {ok, [Domain]} -> destroy_1(Ref, Domain);
         {error, Error} -> {error, Error}
     end.
 
@@ -92,15 +93,9 @@ destroy_1(Ref, Domain) ->
     end.
 
 destroy_2(Ref, Domain) ->
-    case verx:domain_undefine(Ref, [Domain]) of
-        ok -> destroy_3(Ref, Domain);
-        {error, Error} -> {error, Error}
-    end.
-
-destroy_3(Ref, Domain) ->
     % Retrieve the rootfs path
     {ok, [XML]} = verx:domain_get_xml_desc(Ref, [Domain, 0]),
-    {Xmerl, _} = xmerl_scan:string(XML),
+    {Xmerl, _} = xmerl_scan:string(binary_to_list(XML)),
 
     Res = xmerl_xpath:string("string(/domain/devices/filesystem/target[@dir='/']/../source/@dir)", Xmerl),
 
@@ -110,7 +105,9 @@ destroy_3(Ref, Domain) ->
     Root = lists:reverse(Toor),
 
     % XXX file:del_dir/1
-    os:cmd("/bin/rm -rf " ++ Root).
+    os:cmd("/bin/rm -rf " ++ Root),
+
+    verx:domain_undefine(Ref, [Domain]).
 
 template(Options) ->
     Name = proplists:get_value(name, Options),
@@ -226,7 +223,7 @@ macaddr(Name) ->
 dirs() ->
     [
         "/bin",
-        "/dev/shm",
+        "/dev",
         "/etc/default",
         "/etc/pam.d",
         "/etc/security",
@@ -240,6 +237,8 @@ dirs() ->
         "/root",
         "/run/shm",
         "/sbin",
+        "/selinux",
+        "/sys",
         "/tmp",
         "/usr",
         "/var",

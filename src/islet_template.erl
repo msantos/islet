@@ -33,3 +33,6 @@ filesystem(Ctx) ->
 
     [ dict:from_list([{source, Source}, {target, Target}])
         || {Source, Target} <- Filesystems ].
+
+readonly() ->
+    false.
