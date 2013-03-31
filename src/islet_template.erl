@@ -30,7 +30,7 @@ filesystem(Ctx) ->
     Filesystems = [
         [{source, Path ++ "/" ++ Name ++ "/rootfs"},
          {target, "/"},
-         {readonly, false}]
+         {readonly, true}]
     ] ++ islet:filesystems(),
 
     [ dict:from_list(proplists:unfold(FS))

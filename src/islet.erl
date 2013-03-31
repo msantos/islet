@@ -119,7 +119,7 @@ template(Options) ->
     Mount = [
         [{source, Path ++ "/" ++ Name ++ "/rootfs"},
          {target, "/"},
-         {readonly, false}]
+         {readonly, true}]
     ] ++ filesystems(),
 
     Interfaces = proplists:get_value(interfaces, Options, Iface),
@@ -293,8 +293,6 @@ setup(Name) ->
     "
 export PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 hostname -b " ++ Name ++ "
-chmod 755 /home/islet
-chown islet /home/islet
 ".
 
 init(Uid0, Setup) ->
@@ -302,6 +300,7 @@ init(Uid0, Setup) ->
 "#!/bin/sh
 set -e
 mount -t tmpfs -o noatime,mode=1777,nosuid,size=32M tmpfs /tmp
+mount -t tmpfs -o uid=" ++ Uid ++ ",gid=" ++ Uid ++",noatime,mode=0755,nosuid,size=64M tmpfs /home/islet
 " ++ Setup ++ "
 exec /sbin/start-stop-daemon --start --verbose --exec /islet --chuid " ++ Uid.
 
