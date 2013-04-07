@@ -1,4 +1,5 @@
-## Screenshot
+Screenshot
+----------
 
 Create 100 distributed Erlang nodes:
 
@@ -37,7 +38,6 @@ The containers are created by libvirt:
                     [{uuid,"53125f7d-17f5-bdff-ede7-1ccf4f1b1ef2"},{id,22346}]},
                    {<<"atoll-21">>,
     <...>
-
 
 The isolated nodes can be reached using Erlang distribution:
 
