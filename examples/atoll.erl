@@ -1,33 +1,39 @@
 -module(atoll).
 
 -export([
-        create/1,
-        destroy/1
+        create/1, create/2,
+        destroy/1, destroy/2
     ]).
 
 create(N) ->
-    {ok, Ref} = islet:start(),
-    spinup(Ref, N).
+    create("atoll-", N).
 
-spinup(Ref, 0) ->
+create(Prefix, N) when is_list(Prefix) ->
+    {ok, Ref} = islet:start(),
+    spinup(Prefix, Ref, N).
+
+spinup(_Prefix, Ref, 0) ->
     islet:stop(Ref);
-spinup(Ref, N) ->
-    Name = "atoll-" ++ integer_to_list(N),
+spinup(Prefix, Ref, N) ->
+    Name = Prefix ++ integer_to_list(N),
     ok = islet:create(Ref, [
             {name, Name},
             {setup, setup(Name)},
             {islet, islet()}
         ]),
-    spinup(Ref, N-1).
+    spinup(Prefix, Ref, N-1).
 
 destroy(N) ->
-    {ok, Ref} = islet:start(),
-    destroy(Ref, N).
+    destroy("atoll-", N).
 
-destroy(Ref, 0) ->
+destroy(Prefix, N) when is_list(Prefix) ->
+    {ok, Ref} = islet:start(),
+    destroy(Prefix, Ref, N).
+
+destroy(_Prefix, Ref, 0) ->
     islet:stop(Ref);
-destroy(Ref, N) ->
-    islet:destroy(Ref, "atoll-" ++ integer_to_list(N)),
+destroy(Prefix, Ref, N) ->
+    islet:destroy(Ref, Prefix ++ integer_to_list(N)),
     destroy(N-1).
 
 setup(Name) ->
