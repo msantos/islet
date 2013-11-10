@@ -29,289 +29,386 @@
 %% ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 %% POSSIBILITY OF SUCH DAMAGE.
 -module(islet).
+-behaviour(gen_server).
 
 -include_lib("kernel/include/file.hrl").
--include_lib("xmerl/include/xmerl.hrl").
 
 -export([
-        start/0,
-        stop/1,
-        create/1, create/2,
-        destroy/2,
+        env/0, env/1,
+        prepare/1,
 
-        chroot/1,
-        template/1,
+        spawn/1, spawn/2,
+        kill/1,
 
-        chroot_template/2,
-        chroot_files/2,
-        chroot_empty/2,
-
-        macaddr/1,
-
-        dirs/0,
-        filesystems/0,
-        setup/1
+        send/2,
+        recv/1, recv/2
+    ]).
+-export([
+        env_to_xml/1
     ]).
 
--define(ISLET_ROOT, filename:absname("priv/archipelago")).
+-export([start_link/2]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2,
+        terminate/2, code_change/3]).
+
+-record(conn, {
+        pid,
+        domain
+    }).
+
+-record(state, {
+        pid,
+        env = [],
+        cfg,
+        conn = #conn{}
+    }).
+
+-define(ISLET_VERSION, "0.2.0").
 
 
-start() ->
-    {ok, Ref} = verx_client:start(),
-    ok = verx:open(Ref, ["lxc:///", 0]),
-    {ok, Ref}.
+env() ->
+    % XXX relies on 'directory' preceeding 'file'
+    [
+        {name, undefined},
 
-stop(Ref) ->
-    verx_client:stop(Ref).
+        {memory, default(memory)},
+        {description, default(description)},
 
-create(Ref) ->
-    create(Ref, []).
-create(Ref, Options0) ->
-    Name = proplists:get_value(name, Options0, islet_template:name()),
-    Path = proplists:get_value(path, Options0, ?ISLET_ROOT),
+        {directory, [
+                "/dev",
+                "/etc/default",
+                "/etc/pam.d",
+                "/etc/security",
+                "/etc/skel",
+                "/etc/ssh/authorized_keys",
+                "/home",
+                "/home/islet",
+                "/proc",
+                "/root",
+                "/run/shm",
+                "/selinux",
+                "/sys",
+                "/tmp",
+                "/var",
+                "/var/log",
+                "/var/run",
 
-    Options = [
-        {name, Name},
-        {path, Path}
-    ] ++ Options0,
+                {mount, "/", default(root)},
+                {mount, "/bin"},
+                {mount, "/sbin"},
+                {mount, "/lib"},
+                {mount, "/lib64"},
+                {mount, "/usr"}
+            ]},
 
-    ok = chroot(Options),
+        {file, [
+                "/var/log/lastlog",
+                "/var/log/wtmp",
+                "/var/run/utmp",
 
-    XML = template(Options),
+                {copy, "/etc/default/locale"},
+                {copy, "/etc/environment"},
+                {copy, "/etc/group"},
+                {copy, "/etc/hosts"},
+                {copy, "/etc/security/limits.conf"},
+                {copy, "/etc/security/pam_env.conf"},
 
-    {ok, [Domain]} = verx:domain_define_xml(Ref, [XML]),
-    ok = file:write_file(Path ++ "/" ++ Name ++ "/islet.xml", XML),
+                {copy, "/init", priv_dir("init")}
+            ]}
+    ].
 
-    verx:domain_create(Ref, [Domain]).
+env(Env) when is_list(Env) ->
+    lists:ukeysort(1, Env ++ env()).
 
-destroy(Ref, Name) ->
-    case verx:lookup(Ref, {domain, Name}) of
-        {ok, [Domain]} -> destroy_1(Ref, Domain);
-        {error, Error} -> {error, Error}
-    end.
+prepare(Env) when is_list(Env) ->
+    chroot(Env).
 
-destroy_1(Ref, Domain) ->
-    case verx:domain_destroy(Ref, [Domain]) of
-        ok -> destroy_2(Ref, Domain);
-        {error, Error} -> {error, Error}
-    end.
+%%--------------------------------------------------------------------
+%%% API
+%%--------------------------------------------------------------------
+spawn(Env) ->
+    ?MODULE:spawn(Env, []).
+spawn(Env, Options) ->
+    start_link(Env, Options).
 
-destroy_2(Ref, Domain) ->
-    % Retrieve the rootfs path
-    {ok, [XML]} = verx:domain_get_xml_desc(Ref, [Domain, 0]),
-    {Xmerl, _} = xmerl_scan:string(binary_to_list(XML)),
+kill(Ref) when is_pid(Ref) ->
+    gen_server:call(Ref, kill, infinity).
 
-    Res = xmerl_xpath:string("string(/domain/devices/filesystem/target[@dir='/']/../source/@dir)", Xmerl),
+send(Ref, Data) ->
+    Conn = getstate(Ref, conn),
+    verx_client:send(Conn, Data).
 
-    % Ensure the path is valid
-    "sftoor/" ++ Toor = lists:reverse(Res#xmlObj.value),
+recv(Ref) ->
+    recv(Ref, 5000).
+recv(Ref, Timeout) ->
+    Conn = getstate(Ref, conn),
+    verx_client:recv(Conn, Timeout).
 
-    Root = lists:reverse(Toor),
+start_link(Env, Options) ->
+    Pid = self(),
+    gen_server:start_link(?MODULE, [Pid, Env, Options], []).
 
-    % XXX file:del_dir/1
-    os:cmd("/bin/rm -rf " ++ Root),
 
-    verx:domain_undefine(Ref, [Domain]).
+%%--------------------------------------------------------------------
+%%% Callbacks
+%%--------------------------------------------------------------------
+init([Pid, Env, Options]) ->
+    process_flag(trap_exit, true),
 
-template(Options) ->
-    Name = proplists:get_value(name, Options),
-    Path = proplists:get_value(path, Options),
-    Memory = integer_to_list(proplists:get_value(memory, Options, islet_template:memory())),
+    Cfg = env_to_xml(Env),
 
-    Iface = [ {Dev, islet:macaddr(Name ++ "-" ++ Dev)} || Dev <- interfaces() ],
+    {ok, Conn} = verx_client:start(Options),
+    ok = verx:open(Conn, ["lxc:///", 0]),
+    {ok, [Domain]} = verx:domain_define_xml(Conn, [verx_config:to_xml(Cfg)]),
+    ok = verx:domain_create(Conn, [Domain]),
 
-    Mount = [
-        [{source, Path ++ "/" ++ Name ++ "/rootfs"},
-         {target, "/"},
-         {readonly, true}]
-    ] ++ filesystems(),
+    % Open a connection to the system console
+    ok = verx:domain_open_console(Conn, [Domain, void, 0]),
 
-    Interfaces = proplists:get_value(interfaces, Options, Iface),
-    Filesystems = proplists:get_value(filesystems, Options, Mount),
+    {ok, #state{
+            pid = Pid,
+            env = Env,
+            cfg = Cfg,
 
-    Ctx = [
-        {name, Name},
-        {path, Path},
-        {memory, Memory},
-        {interfaces, [ dict:from_list([{source, Source}, {macaddr, Address}])
-                || {Source, Address} <- Interfaces ]},
-        {filesystems, [ dict:from_list(proplists:unfold(FS)) || FS <- Filesystems ]}
-    ],
+            conn = #conn{
+                pid = Conn,
+                domain = Domain
+            }
+    }}.
 
-    Template = mustache:compile(islet_template),
-    mustache:render(islet_template, Template, dict:from_list(Ctx)).
+handle_call({state, Field}, _From, State) ->
+    {reply, state(Field, State), State};
 
-chroot(Options) ->
-    Name = proplists:get_value(name, Options),
-    Path0 = proplists:get_value(path, Options),
+handle_call(kill, _From, #state{conn = #conn{pid = Conn, domain = Domain}} = State) ->
+    verx:domain_destroy(Conn, [Domain]),
+    verx:domain_undefine(Conn, [Domain]),
+    verx_client:stop(Conn),
+    {stop, normal, ok, State}.
 
-    MinUid = proplists:get_value(min_uid, Options, 16#8000),
-    MaxUid = proplists:get_value(max_uid, Options, 16#ff00),
-    Uid = proplists:get_value(uid, Options, uid(MinUid, MaxUid)),
+handle_cast(_Msg, State) ->
+    {noreply, State}.
 
-    Setup = proplists:get_value(setup, Options, setup(Name)),
-    Init = proplists:get_value(init, Options, init(Uid, Setup)),
-    Islet = proplists:get_value(islet, Options, islet()),
+handle_info({verx, Conn, _} = Data, #state{pid = Pid, conn = #conn{pid = Conn}} = State) ->
+    Pid ! Data,
+    {noreply, State};
 
-    Path = Path0 ++ "/" ++ Name,
+% WTF?
+handle_info(Info, State) ->
+    error_logger:error_report([wtf, Info]),
+    {noreply, State}.
 
-    Root = Path ++ "/rootfs",
-    ok = filelib:ensure_dir(Root ++ "/."),
-    ok = file:change_mode(Path, 8#0700),
-
-    islet:chroot_template(Root, dirs()),
-    islet:chroot_files(Root, files()),
-    islet:chroot_empty(Root, empty()),
-
-    ok = file:write_file(Path ++ "/rootfs/etc/passwd", passwd(Uid)),
-    file:change_mode(Path ++ "/rootfs/etc/passwd", 8#444),
-
-    ok = file:write_file(Path ++ "/rootfs/init", Init),
-    file:change_mode(Path ++ "/rootfs/init", 8#755),
-
-    ok = file:write_file(Path ++ "/rootfs/islet", Islet),
-    file:change_mode(Path ++ "/rootfs/islet", 8#755).
-
-%%
-%% Utilities to prepare the chroot
-%%
-
-% Create a chroot hierarchy
-chroot_template(Chroot0, Template) ->
-    Chroot = maybe_binary(Chroot0),
-    true = filelib:is_dir(Chroot),
-
-    [ ok = filelib:ensure_dir(<<Chroot/binary, "/", (maybe_binary(Path))/binary, "/.">>)
-        || Path <- Template ],
-
+terminate(_Reason, #state{conn = #conn{pid = Conn, domain = Domain}}) ->
+    verx:domain_destroy(Conn, [Domain]),
+    verx:domain_undefine(Conn, [Domain]),
+    verx_client:stop(Conn),
     ok.
 
-% Copy files into a chroot
-chroot_files(Chroot0, Files) ->
-    Chroot = maybe_binary(Chroot0),
-    true = filelib:is_dir(Chroot),
+code_change(_OldVsn, State, _Extra) ->
+    {ok, State}.
 
-    [ begin
-        Copy = <<Chroot/binary, "/", (maybe_binary(File))/binary>>,
-        {ok, _} =  file:copy(File, Copy),
-        {ok, FI} = file:read_file_info(File),
-        ok = file:change_mode(Copy, FI#file_info.mode)
-      end
-        || File <- Files ],
+%%--------------------------------------------------------------------
+%%% Internal functions
+%%--------------------------------------------------------------------
+default(root) ->
+    priv_dir("/islet/rootfs");
+default(name) ->
+    N = erlang:phash2(self()),
+    "islet-" ++ integer_to_list(N);
+default(memory) ->
+    integer_to_list(128 * 1024);
+default(description) ->
+    "islet v" ++ ?ISLET_VERSION.
 
-    ok.
-
-% Touch empty files in chroot
-chroot_empty(Chroot0, Files) ->
-    Chroot = maybe_binary(Chroot0),
-    true = filelib:is_dir(Chroot),
-
-    [ begin
-        {ok, FH} = file:open(<<Chroot/binary, "/", (maybe_binary(File))/binary>>, [write]), 
-        ok = file:close(FH)
-      end || File <- Files ],
-
-    ok.
-
-maybe_binary(N) when is_list(N) -> list_to_binary(N);
-maybe_binary(N) when is_binary(N) -> N.
-
-macaddr([]) ->
-    macaddr(crypt:rand_bytes(5));
 macaddr(Name) ->
     <<Bytes:5/bytes, _/binary>> = erlang:md5(Name),
-    "52:" ++ string:join([ httpd_util:integer_to_hexlist(N)
-    || <<N:8>> <= Bytes ], ":").
+    MAC = ["52"] ++ [ integer_to_list(N, 16) || <<N:8>> <= Bytes ],
+    string:join(MAC, ":").
 
+priv_dir() ->
+    case code:priv_dir(?MODULE) of
+        {error, bad_name} ->
+            filename:join([
+                    filename:dirname(code:which(?MODULE)),
+                    "..",
+                    "priv"
+                ]);
+        Dir ->
+            Dir
+    end.
+
+priv_dir(Path) ->
+    join(priv_dir(), Path).
 
 %%
-%% Defaults
+%% VM chroot
 %%
-dirs() ->
-    [
-        "/bin",
-        "/dev",
-        "/etc/default",
-        "/etc/pam.d",
-        "/etc/security",
-        "/etc/skel",
-        "/etc/ssh/authorized_keys",
-        "/home",
-        "/home/islet",
-        "/lib",
-        "/lib64",
-        "/proc",
-        "/root",
-        "/run/shm",
-        "/sbin",
-        "/selinux",
-        "/sys",
-        "/tmp",
-        "/usr",
-        "/var",
-        "/var/log",
-        "/var/run"
-    ].
 
-files() ->
-    [
-        "/etc/default/locale",
-        "/etc/environment",
-        "/etc/group",
-        "/etc/hosts",
-        "/etc/security/limits.conf",
-        "/etc/security/pam_env.conf"
-    ].
+join(Path0, Path1) ->
+    % Removes redundant path separators
+    filename:join([Path0 ++ "/" ++ Path1]).
 
-empty() ->
-    [
-        "/var/log/lastlog",
-        "/var/log/wtmp",
-        "/var/run/utmp"
-    ].
+% Create a directory
+mkdir(Root, Dir) ->
+    filelib:ensure_dir(join(Root, Dir) ++ "/").
 
-interfaces() ->
-    [
-        "br0"
-    ].
+% Create an empty file
+touch(Root, File) ->
+    case file:open(join(Root, File), [write]) of
+        {ok, FH} ->
+            file:close(FH);
+        Error ->
+            Error
+    end.
 
-filesystems() ->
-    [
-        [{source, "/bin"}, {target, "/bin"}, readonly],
-        [{source, "/sbin"}, {target, "/sbin"}, readonly],
-        [{source, "/lib"}, {target, "/lib"}, readonly],
-        [{source, "/lib64"}, {target, "/lib64"}, readonly],
-        [{source, "/usr"}, {target, "/usr"}, readonly]
-    ].
+copy(Root, Source, File) ->
+    Dest = join(Root, File),
+    {ok, _} = file:copy(Source, Dest),
+    {ok, Info} = file:read_file_info(Source),
+    file:change_mode(Dest, Info#file_info.mode).
 
-uid(Min, Max) ->
-    crypto:rand_uniform(Min, Max).
+root(Env) ->
+    Dir = proplists:get_value(directory, Env),
+    case lists:keyfind("/", 2, Dir) of
+        {mount, "/", Root} ->
+            Root;
+        {mount, "/"} ->
+            "/"
+    end.
 
-passwd(Uid0) ->
-    Uid = integer_to_list(Uid0),
-"root:x:0:0:root:/root:/usr/sbin/nologin
-islet:x:" ++ Uid ++ ":" ++ Uid ++ "::/home/islet:/usr/sbin/nologin
-".
+% Set up the chroot directory for the VM
+chroot(Env) ->
+    Root = root(Env),
+    chroot(Root, Env).
 
-setup(Name) ->
-    "
-export PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-hostname -b " ++ Name ++ "
-".
+chroot(_Root, []) ->
+    ok;
+chroot(Root, [{directory, Dirs}|Tail]) ->
+    lists:foreach(fun
+            ({mount, Dir}) ->
+                ok = mkdir(Root, Dir);
+            ({mount, Dir, _}) ->
+                ok = mkdir(Root, Dir);
+            (Dir) when is_list(Dir) ->
+                ok = mkdir(Root, Dir);
+            (_) ->
+                ok
+        end,
+        Dirs),
+    chroot(Root, Tail);
+chroot(Root, [{file, Files}|Tail]) ->
+    lists:foreach(fun
+            ({copy, File}) ->
+                ok = copy(Root, File, File);
+            ({copy, File, Source}) ->
+                ok = copy(Root, Source, File);
+            (File) when is_list(File) ->
+                ok = touch(Root, File);
+            (_) ->
+                ok
+        end,
+        Files),
+    chroot(Root, Tail);
+chroot(Root, [_|Tail]) ->
+    chroot(Root, Tail).
 
-init(Uid0, Setup) ->
-    Uid = integer_to_list(Uid0),
-"#!/bin/sh
-set -e
-mount -t tmpfs -o noatime,mode=1777,nosuid,size=32M tmpfs /tmp
-mount -t tmpfs -o uid=" ++ Uid ++ ",gid=" ++ Uid ++",noatime,mode=0755,nosuid,size=64M tmpfs /home/islet
-" ++ Setup ++ "
-exec /sbin/start-stop-daemon --start --verbose --exec /islet --chuid " ++ Uid.
+%%
+%% libvirt XML
+%%
+set(Node, Cfg) when is_atom(Node); is_tuple(Node) ->
+    set([Node], Cfg);
+set(Nodes, Cfg) ->
+    lists:foldl(fun({Key, Value}, X) -> verx_config:set(Key, Value, X) end,
+        Cfg,
+        Nodes).
 
-islet() ->
-    "#!/bin/sh
-set -e
-while read l; do
-    echo $l
-done
-".
+add(Node, Cfg) when is_atom(Node); is_tuple(Node) ->
+    add([Node], Cfg);
+add(Nodes, Cfg) ->
+    lists:foldl(fun({Key, Value}, X) -> verx_config:append(Key, Value, X) end,
+        Cfg,
+        Nodes).
+
+% Convert the islet environment to XML format
+env_to_xml(Env) when is_list(Env) ->
+    % XXX Allow setting the name to 'undefined' in the template
+    Name = case proplists:get_value(name, Env, undefined) of
+        undefined ->
+            default(name);
+        N ->
+            error_logger:info_report([{name, N}]),
+            N
+    end,
+    Base = [{[os,type],"exe"},
+            {[os,init],"/init"},
+            {[devices,{console,[{type,["pty"]}]}],[]}],
+    Cfg0 = set({name, Name}, verx_config:init([{type, "lxc"}])),
+    Cfg = add(Base, Cfg0),
+    env_to_xml(Name, proplists:delete(name, Env), Cfg).
+
+env_to_xml(_, [], Cfg) ->
+    Cfg;
+env_to_xml(Name, [{directory, Dirs}|Tail], Cfg) ->
+    N = lists:foldl(fun
+            ({mount, Dir}, Acc) ->
+                FS = {devices, {filesystem, [{type, ["mount"]}],
+                                            [{source, [{dir, [Dir]}], []},
+                                             {target, [{dir, [Dir]}], []},
+                                             readonly]}},
+                    [FS|Acc];
+            ({mount, Target, Source}, Acc) ->
+                FS = {devices, {filesystem, [{type, ["mount"]}],
+                                            [{source, [{dir, [Source]}], []},
+                                             {target, [{dir, [Target]}], []},
+                                             readonly]}},
+                    [FS|Acc];
+            (_, Acc) ->
+                Acc
+        end,
+        [],
+        Dirs),
+    env_to_xml(Name, Tail, add(N, Cfg));
+env_to_xml(Name, [{interfaces, Ifaces}|Tail], Cfg) ->
+    N = lists:foldl(fun
+            ({dev, Dev}, Acc) ->
+                IF = {devices, {interface, [{type, ["bridge"]}],
+                                           [{mac, [{address, [macaddr(Name ++ Dev)]}], []},
+                                            {source, [{bridge, [Dev]}], []}]}},
+                [IF|Acc];
+            ({dev, Dev, MAC}, Acc) ->
+                IF = {devices, {interface, [{type, ["bridge"]}],
+                                           [{mac, [{address, [MAC]}], []},
+                                            {source, [{bridge, [Dev]}], []}]}},
+                [IF|Acc];
+            (_, Acc) ->
+                Acc
+        end,
+        [],
+        Ifaces),
+    env_to_xml(Name, Tail, add(N, Cfg));
+env_to_xml(Name, [{Skip, _}|Tail], Cfg) when Skip =:= file ->
+    env_to_xml(Name, Tail, Cfg);
+env_to_xml(Name, [{_, _} = Spec|Tail], Cfg) ->
+    env_to_xml(Name, Tail, set(Spec, Cfg));
+env_to_xml(Name, [_|Tail], Cfg) ->
+    env_to_xml(Name, Tail, Cfg).
+
+
+getstate(Ref, Key) when is_atom(Key) ->
+    [{Key, Value}] = gen_server:call(Ref, {state, [Key]}, infinity),
+    Value.
+
+state(Fields, State) ->
+    state(Fields, State, []).
+state([], _State, Acc) ->
+    lists:reverse(Acc);
+state([Field|Fields], State, Acc) ->
+    state(Fields, State, [{Field, field(Field, State)}|Acc]).
+
+field(conn, #state{conn = #conn{pid = Conn}}) -> Conn;
+field(domain, #state{conn = #conn{domain = Domain}}) -> Domain;
+
+field(cfg, #state{cfg = Cfg}) -> Cfg;
+field(env, #state{env = Env}) -> Env;
+field(pid, #state{pid = Pid}) -> Pid;
+
+field(_, _) -> unsupported.
