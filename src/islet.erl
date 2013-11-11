@@ -41,7 +41,9 @@
         kill/1,
 
         send/2,
-        recv/1, recv/2
+        recv/1, recv/2,
+
+        script/1, script/2
     ]).
 -export([
         env_to_xml/1
@@ -69,7 +71,7 @@
 env() ->
     % XXX relies on 'directory' preceeding 'file'
     [
-        {name, undefined},
+        {name, default(name)},
 
         {memory, default(memory)},
         {description, default(description)},
@@ -113,7 +115,8 @@ env() ->
                 {copy, "/etc/security/limits.conf"},
                 {copy, "/etc/security/pam_env.conf"},
 
-                {copy, "/init", priv_dir("init")}
+                {copy, "/init", priv_dir("init")},
+                {copy, "/islet", priv_dir("islet")}
             ]}
     ].
 
@@ -210,7 +213,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%--------------------------------------------------------------------
 default(root) ->
-    priv_dir("/islet/rootfs");
+    priv_dir("/rootfs");
 default(name) ->
     N = erlang:phash2(self()),
     "islet-" ++ integer_to_list(N);
@@ -330,24 +333,15 @@ add(Nodes, Cfg) ->
 
 % Convert the islet environment to XML format
 env_to_xml(Env) when is_list(Env) ->
-    % XXX Allow setting the name to 'undefined' in the template
-    Name = case proplists:get_value(name, Env, undefined) of
-        undefined ->
-            default(name);
-        N ->
-            error_logger:info_report([{name, N}]),
-            N
-    end,
     Base = [{[os,type],"exe"},
             {[os,init],"/init"},
             {[devices,{console,[{type,["pty"]}]}],[]}],
-    Cfg0 = set({name, Name}, verx_config:init([{type, "lxc"}])),
-    Cfg = add(Base, Cfg0),
-    env_to_xml(Name, proplists:delete(name, Env), Cfg).
+    Cfg = add(Base, verx_config:init([{type, "lxc"}])),
+    env_to_xml(Env, Cfg).
 
-env_to_xml(_, [], Cfg) ->
+env_to_xml([], Cfg) ->
     Cfg;
-env_to_xml(Name, [{directory, Dirs}|Tail], Cfg) ->
+env_to_xml([{directory, Dirs}|Tail], Cfg) ->
     N = lists:foldl(fun
             ({mount, Dir}, Acc) ->
                 FS = {devices, {filesystem, [{type, ["mount"]}],
@@ -366,12 +360,13 @@ env_to_xml(Name, [{directory, Dirs}|Tail], Cfg) ->
         end,
         [],
         Dirs),
-    env_to_xml(Name, Tail, add(N, Cfg));
-env_to_xml(Name, [{interfaces, Ifaces}|Tail], Cfg) ->
+    env_to_xml(Tail, add(N, Cfg));
+env_to_xml([{interfaces, Ifaces}|Tail], Cfg) ->
     N = lists:foldl(fun
             ({dev, Dev}, Acc) ->
+                N = integer_to_list(erlang:phash2(self())),
                 IF = {devices, {interface, [{type, ["bridge"]}],
-                                           [{mac, [{address, [macaddr(Name ++ Dev)]}], []},
+                                           [{mac, [{address, [macaddr(N ++ Dev)]}], []},
                                             {source, [{bridge, [Dev]}], []}]}},
                 [IF|Acc];
             ({dev, Dev, MAC}, Acc) ->
@@ -384,13 +379,13 @@ env_to_xml(Name, [{interfaces, Ifaces}|Tail], Cfg) ->
         end,
         [],
         Ifaces),
-    env_to_xml(Name, Tail, add(N, Cfg));
-env_to_xml(Name, [{Skip, _}|Tail], Cfg) when Skip =:= file ->
-    env_to_xml(Name, Tail, Cfg);
-env_to_xml(Name, [{_, _} = Spec|Tail], Cfg) ->
-    env_to_xml(Name, Tail, set(Spec, Cfg));
-env_to_xml(Name, [_|Tail], Cfg) ->
-    env_to_xml(Name, Tail, Cfg).
+    env_to_xml(Tail, add(N, Cfg));
+env_to_xml([{Skip, _}|Tail], Cfg) when Skip =:= file ->
+    env_to_xml(Tail, Cfg);
+env_to_xml([{_, _} = Spec|Tail], Cfg) ->
+    env_to_xml(Tail, set(Spec, Cfg));
+env_to_xml([_|Tail], Cfg) ->
+    env_to_xml(Tail, Cfg).
 
 
 getstate(Ref, Key) when is_atom(Key) ->
@@ -412,3 +407,30 @@ field(env, #state{env = Env}) -> Env;
 field(pid, #state{pid = Pid}) -> Pid;
 
 field(_, _) -> unsupported.
+
+script(init) ->
+    script(init, []);
+script(islet) ->
+    script(islet, []).
+
+script(init, Options) ->
+    Tmp = proplists:get_value(tmp, Options, "32M"),
+    Home = proplists:get_value(home, Options, "64M"),
+    Setup = proplists:get_value(setup, Options, ""),
+
+    "#!/bin/sh
+set -e
+mount -t tmpfs -o noatime,mode=1777,nosuid,size=" ++ Tmp ++ " tmpfs /tmp
+mount -t tmpfs -o uid=$UID,gid=$UID,noatime,mode=0755,nosuid,size=" ++ Home ++ " tmpfs /home/islet
+" ++ Setup ++ "
+exec /islet
+";
+
+script(islet, _Options) ->
+    "#!/bin/sh
+set -e
+echo islet running ...
+while read line; do
+    echo $line
+done
+".

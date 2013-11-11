@@ -1,3 +1,24 @@
+
+Prepare the Islet Directory
+---------------------------
+
+```erlang
+1> Env = islet:env().
+2> file:write_file("priv/init", islet:script(init)).
+3> file:write_file("priv/islet", islet:script(islet)).
+4> file:change_mode("priv/init", 8#755).
+5> file:change_mode("priv/islet", 8#755).
+6> islet:prepare(Env).
+```
+
+Spawn an Islet
+--------------
+
+```erlang
+1> {ok, Ref} = islet:spawn(Env).
+2>
+```
+
 Screenshot
 ----------
 
