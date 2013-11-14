@@ -32,6 +32,7 @@
 -behaviour(gen_server).
 
 -include_lib("kernel/include/file.hrl").
+-include_lib("islet/include/islet.hrl").
 
 -export([
         env/0, env/1,
@@ -65,49 +66,48 @@
         conn = #conn{}
     }).
 
--define(ISLET_VERSION, "0.2.0").
-
+-define(ISLET_VERSION, "0.2.1").
 
 env() ->
-    % XXX relies on 'directory' preceeding 'file'
-    [
-        {name, default(name)},
+    env([]).
 
-        {memory, default(memory)},
-        {description, default(description)},
+env(Options) ->
+    Name = proplists:get_value(name, Options, default(name)),
 
-        {directory, [
-                "/dev",
+    Memory = proplists:get_value(memory, Options, default(memory)),
+    Description = proplists:get_value(memory, Options, default(description)),
+
+    Interfaces = proplists:get_value(interface, Options, []),
+
+    SandboxPath = proplists:get_value(sandbox_path, Options, priv_dir("/islets/" ++ Name)),
+    ChrootPath = proplists:get_value(chroot_path, Options, priv_dir("/rootfs")),
+
+    Exec = proplists:get_value(exec, Options, priv_dir("/islet_exec")),
+
+    Init = proplists:get_value(init, Options, script(init)),
+    Islet = proplists:get_value(islet, Options, script(islet)),
+
+    #islet{
+        system = [
+                {name, Name},
+                {memory, Memory},
+                {description, Description}
+            ],
+
+        interface = Interfaces,
+
+        sandbox = #islet_root{
+            path = SandboxPath,
+            directory = [
+                "/boot",
                 "/etc/default",
                 "/etc/pam.d",
                 "/etc/security",
                 "/etc/skel",
-                "/etc/ssh/authorized_keys",
-                "/home",
-                "/home/islet",
-                "/proc",
-                "/root",
-                "/run/shm",
-                "/selinux",
-                "/sys",
-                "/tmp",
-                "/var",
-                "/var/log",
-                "/var/run",
+                "/etc/ssh/authorized_keys"
+            ],
 
-                {mount, "/", default(root)},
-                {mount, "/bin"},
-                {mount, "/sbin"},
-                {mount, "/lib"},
-                {mount, "/lib64"},
-                {mount, "/usr"}
-            ]},
-
-        {file, [
-                "/var/log/lastlog",
-                "/var/log/wtmp",
-                "/var/run/utmp",
-
+            file = [
                 {copy, "/etc/default/locale"},
                 {copy, "/etc/environment"},
                 {copy, "/etc/group"},
@@ -115,16 +115,54 @@ env() ->
                 {copy, "/etc/security/limits.conf"},
                 {copy, "/etc/security/pam_env.conf"},
 
-                {copy, "/init", priv_dir("init")},
-                {copy, "/islet", priv_dir("islet")}
-            ]}
-    ].
+                {copy, "/boot/islet_exec", Exec},
 
-env(Env) when is_list(Env) ->
-    lists:ukeysort(1, Env ++ env()).
+                {write, join(SandboxPath, "/boot/init"), #file_info{mode = 8#755}, Init},
+                {write, join(SandboxPath, "/boot/islet"), #file_info{mode = 8#755}, Islet}
+            ]
+        },
 
-prepare(Env) when is_list(Env) ->
-    chroot(Env).
+        chroot = #islet_root{
+            path = ChrootPath,
+
+            directory = [
+                    "/dev",
+                    "/home",
+                    "/home/islet",
+                    "/proc",
+                    "/root",
+                    "/run/shm",
+                    "/selinux",
+                    "/sys",
+                    "/tmp",
+                    "/var",
+                    "/var/log",
+                    "/var/run",
+
+                    {mount, "/", ChrootPath},
+                    {mount, "/bin"},
+                    {mount, "/sbin"},
+                    {mount, "/lib"},
+                    {mount, "/lib64"},
+                    {mount, "/usr"},
+
+                    {mount, "/boot", join(SandboxPath, "/boot")},
+                    {mount, "/etc", join(SandboxPath, "/etc")}
+                ],
+
+            file = [
+                "/var/log/lastlog",
+                "/var/log/wtmp",
+                "/var/run/utmp"
+                ]
+        }
+    }.
+
+prepare(#islet{sandbox = Sandbox, chroot = Chroot}) ->
+    prepare(Sandbox),
+    prepare(Chroot);
+prepare(#islet_root{} = Dir) ->
+    chroot(Dir).
 
 %%--------------------------------------------------------------------
 %%% API
@@ -182,10 +220,7 @@ init([Pid, Env, Options]) ->
 handle_call({state, Field}, _From, State) ->
     {reply, state(Field, State), State};
 
-handle_call(kill, _From, #state{conn = #conn{pid = Conn, domain = Domain}} = State) ->
-    verx:domain_destroy(Conn, [Domain]),
-    verx:domain_undefine(Conn, [Domain]),
-    verx_client:stop(Conn),
+handle_call(kill, _From, State) ->
     {stop, normal, ok, State}.
 
 handle_cast(_Msg, State) ->
@@ -201,9 +236,8 @@ handle_info(Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, #state{conn = #conn{pid = Conn, domain = Domain}}) ->
-    verx:domain_destroy(Conn, [Domain]),
     verx:domain_undefine(Conn, [Domain]),
-    verx_client:stop(Conn),
+    verx:domain_destroy(Conn, [Domain]),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -212,8 +246,6 @@ code_change(_OldVsn, State, _Extra) ->
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
-default(root) ->
-    priv_dir("/rootfs");
 default(name) ->
     N = erlang:phash2(self()),
     "islet-" ++ integer_to_list(N);
@@ -269,23 +301,12 @@ copy(Root, Source, File) ->
     {ok, Info} = file:read_file_info(Source),
     file:change_mode(Dest, Info#file_info.mode).
 
-root(Env) ->
-    Dir = proplists:get_value(directory, Env),
-    case lists:keyfind("/", 2, Dir) of
-        {mount, "/", Root} ->
-            Root;
-        {mount, "/"} ->
-            "/"
-    end.
-
 % Set up the chroot directory for the VM
-chroot(Env) ->
-    Root = root(Env),
-    chroot(Root, Env).
+chroot(#islet_root{path = Path, directory = Dir, file = File}) ->
+    chroot(directory, Path, Dir),
+    chroot(file, Path, File).
 
-chroot(_Root, []) ->
-    ok;
-chroot(Root, [{directory, Dirs}|Tail]) ->
+chroot(directory, Root, Dirs) ->
     lists:foreach(fun
             ({mount, Dir}) ->
                 ok = mkdir(Root, Dir);
@@ -296,23 +317,22 @@ chroot(Root, [{directory, Dirs}|Tail]) ->
             (_) ->
                 ok
         end,
-        Dirs),
-    chroot(Root, Tail);
-chroot(Root, [{file, Files}|Tail]) ->
+        Dirs);
+chroot(file, Root, Files) ->
     lists:foreach(fun
             ({copy, File}) ->
                 ok = copy(Root, File, File);
             ({copy, File, Source}) ->
                 ok = copy(Root, Source, File);
+            ({write, File, Perms, Source}) ->
+                ok = file:write_file(File, Source),
+                ok = file:write_file_info(File, Perms);
             (File) when is_list(File) ->
                 ok = touch(Root, File);
             (_) ->
                 ok
         end,
-        Files),
-    chroot(Root, Tail);
-chroot(Root, [_|Tail]) ->
-    chroot(Root, Tail).
+        Files).
 
 %%
 %% libvirt XML
@@ -332,16 +352,22 @@ add(Nodes, Cfg) ->
         Nodes).
 
 % Convert the islet environment to XML format
-env_to_xml(Env) when is_list(Env) ->
+env_to_xml(#islet{
+        system = System,
+        interface = Interface,
+        chroot = #islet_root{directory = Dir}
+    }) ->
     Base = [{[os,type],"exe"},
-            {[os,init],"/init"},
+            {[os,init],"/boot/init"},
             {[devices,{console,[{type,["pty"]}]}],[]}],
     Cfg = add(Base, verx_config:init([{type, "lxc"}])),
-    env_to_xml(Env, Cfg).
 
-env_to_xml([], Cfg) ->
-    Cfg;
-env_to_xml([{directory, Dirs}|Tail], Cfg) ->
+    lists:foldl(fun(T,A) -> env_to_xml(T,A) end,
+        set(System, Cfg),
+        [{interface, Interface},
+            {directory, Dir}]).
+
+env_to_xml({directory, Dirs}, Cfg) ->
     N = lists:foldl(fun
             ({mount, Dir}, Acc) ->
                 FS = {devices, {filesystem, [{type, ["mount"]}],
@@ -360,8 +386,8 @@ env_to_xml([{directory, Dirs}|Tail], Cfg) ->
         end,
         [],
         Dirs),
-    env_to_xml(Tail, add(N, Cfg));
-env_to_xml([{interfaces, Ifaces}|Tail], Cfg) ->
+    add(N, Cfg);
+env_to_xml({interface, Ifaces}, Cfg) ->
     N = lists:foldl(fun
             ({dev, Dev}, Acc) ->
                 N = integer_to_list(erlang:phash2(self())),
@@ -379,14 +405,7 @@ env_to_xml([{interfaces, Ifaces}|Tail], Cfg) ->
         end,
         [],
         Ifaces),
-    env_to_xml(Tail, add(N, Cfg));
-env_to_xml([{Skip, _}|Tail], Cfg) when Skip =:= file ->
-    env_to_xml(Tail, Cfg);
-env_to_xml([{_, _} = Spec|Tail], Cfg) ->
-    env_to_xml(Tail, set(Spec, Cfg));
-env_to_xml([_|Tail], Cfg) ->
-    env_to_xml(Tail, Cfg).
-
+    add(N, Cfg).
 
 getstate(Ref, Key) when is_atom(Key) ->
     [{Key, Value}] = gen_server:call(Ref, {state, [Key]}, infinity),
@@ -417,20 +436,21 @@ script(init, Options) ->
     Tmp = proplists:get_value(tmp, Options, "32M"),
     Home = proplists:get_value(home, Options, "64M"),
     Setup = proplists:get_value(setup, Options, ""),
+    UID = proplists:get_value(uid, Options,
+        integer_to_list(16#F0000000 + crypto:rand_uniform(1, 1024))),
+    GID = proplists:get_value(gid, Options, UID),
 
     "#!/bin/sh
 set -e
 mount -t tmpfs -o noatime,mode=1777,nosuid,size=" ++ Tmp ++ " tmpfs /tmp
-mount -t tmpfs -o uid=$UID,gid=$UID,noatime,mode=0755,nosuid,size=" ++ Home ++ " tmpfs /home/islet
+mount -t tmpfs -o uid=" ++ UID ++ ",gid=" ++ GID ++ ",noatime,mode=0755,nosuid,size=" ++ Home ++ " tmpfs /home/islet
 " ++ Setup ++ "
-exec /islet
+exec /boot/islet_exec " ++ UID ++ " " ++ GID ++ " /boot/islet
 ";
 
 script(islet, _Options) ->
     "#!/bin/sh
 set -e
-echo islet running ...
-while read line; do
-    echo $line
-done
+echo running islet echo server ...
+/bin/cat
 ".
