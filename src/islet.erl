@@ -84,7 +84,7 @@ env(Options) ->
 
     Exec = proplists:get_value(exec, Options, priv_dir("/islet_exec")),
 
-    Init = proplists:get_value(init, Options, script(init)),
+    Init = proplists:get_value(init, Options, script(init, [{name, Name}])),
     Islet = proplists:get_value(islet, Options, script(islet)),
 
     #islet{
@@ -110,7 +110,6 @@ env(Options) ->
             file = [
                 {copy, "/etc/default/locale"},
                 {copy, "/etc/environment"},
-                {copy, "/etc/group"},
                 {copy, "/etc/hosts"},
                 {copy, "/etc/security/limits.conf"},
                 {copy, "/etc/security/pam_env.conf"},
@@ -202,6 +201,7 @@ init([Pid, Env, Options]) ->
     ok = verx:open(Conn, ["lxc:///", 0]),
     {ok, [Domain]} = verx:domain_define_xml(Conn, [verx_config:to_xml(Cfg)]),
     ok = verx:domain_create(Conn, [Domain]),
+    ok = verx:domain_undefine(Conn, [Domain]),
 
     % Open a connection to the system console
     ok = verx:domain_open_console(Conn, [Domain, void, 0]),
@@ -236,7 +236,6 @@ handle_info(Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, #state{conn = #conn{pid = Conn, domain = Domain}}) ->
-    verx:domain_undefine(Conn, [Domain]),
     verx:domain_destroy(Conn, [Domain]),
     ok.
 
@@ -389,16 +388,26 @@ env_to_xml({directory, Dirs}, Cfg) ->
     add(N, Cfg);
 env_to_xml({interface, Ifaces}, Cfg) ->
     N = lists:foldl(fun
-            ({dev, Dev}, Acc) ->
+            ({bridge, Dev}, Acc) ->
                 N = integer_to_list(erlang:phash2(self())),
                 IF = {devices, {interface, [{type, ["bridge"]}],
                                            [{mac, [{address, [macaddr(N ++ Dev)]}], []},
                                             {source, [{bridge, [Dev]}], []}]}},
                 [IF|Acc];
-            ({dev, Dev, MAC}, Acc) ->
+            ({bridge, Dev, MAC}, Acc) ->
                 IF = {devices, {interface, [{type, ["bridge"]}],
                                            [{mac, [{address, [MAC]}], []},
                                             {source, [{bridge, [Dev]}], []}]}},
+
+                [IF|Acc];
+            ({network, Name}, Acc) ->
+                IF = {devices, {interface, [{type, ["network"]}],
+                                           [{source, [{network, [Name]}], []}]}},
+                [IF|Acc];
+            ({network, Name, MAC}, Acc) ->
+                IF = {devices, {interface, [{type, ["network"]}],
+                                           [{mac, [{address, [MAC]}], []},
+                                            {source, [{network, [Name]}], []}]}},
                 [IF|Acc];
             (_, Acc) ->
                 Acc
@@ -433,15 +442,18 @@ script(islet) ->
     script(islet, []).
 
 script(init, Options) ->
+    Name = proplists:get_value(name, Options, default(name)),
     Tmp = proplists:get_value(tmp, Options, "32M"),
     Home = proplists:get_value(home, Options, "64M"),
     Setup = proplists:get_value(setup, Options, ""),
     UID = proplists:get_value(uid, Options,
-        integer_to_list(16#F0000000 + crypto:rand_uniform(1, 1024))),
+        integer_to_list(16#F0000000 + erlang:phash2(self(), 16#ffff))),
     GID = proplists:get_value(gid, Options, UID),
 
     "#!/bin/sh
 set -e
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/sbin
+hostname -b " ++ Name ++ "
 mount -t tmpfs -o noatime,mode=1777,nosuid,size=" ++ Tmp ++ " tmpfs /tmp
 mount -t tmpfs -o uid=" ++ UID ++ ",gid=" ++ GID ++ ",noatime,mode=0755,nosuid,size=" ++ Home ++ " tmpfs /home/islet
 " ++ Setup ++ "
