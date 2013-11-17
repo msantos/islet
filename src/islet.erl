@@ -229,8 +229,8 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%--------------------------------------------------------------------
 default(name) ->
-    N = erlang:phash2(self()),
-    "islet-" ++ integer_to_list(N);
+    N = integer_to_list(16#F0000000 + erlang:phash2(self(), 16#ffff)),
+    "islet-" ++ N;
 default(memory) ->
     integer_to_list(128 * 1024);
 default(description) ->
