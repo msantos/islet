@@ -40,7 +40,7 @@ start(Options) ->
             {shell, {?MODULE, shell, [Options]}}
         ]),
 
-    io:format("Login using: ssh localhost -p ~B -o UserKnownHostsFile=~s/known_hosts",
+    io:format("Login using: ssh localhost -p ~B -o UserKnownHostsFile=~s/known_hosts~n",
         [Port, filename:absname(User)]),
 
     Res.

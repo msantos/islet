@@ -229,7 +229,8 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%--------------------------------------------------------------------
 default(name) ->
-    N = integer_to_list(16#F0000000 + erlang:phash2(self(), 16#ffff)),
+    N = integer_to_list(16#F0000000 +
+        erlang:phash2({node(),self()}, 16#ffff)),
     "islet-" ++ N;
 default(memory) ->
     integer_to_list(128 * 1024);
@@ -430,7 +431,7 @@ script(init, Options) ->
     Home = proplists:get_value(home, Options, "64M"),
     Setup = proplists:get_value(setup, Options, ""),
     UID = proplists:get_value(uid, Options,
-        integer_to_list(16#F0000000 + erlang:phash2(self(), 16#ffff))),
+        integer_to_list(16#F0000000 + erlang:phash2({node(),self()}, 16#ffff))),
     GID = proplists:get_value(gid, Options, UID),
 
     "#!/bin/sh
