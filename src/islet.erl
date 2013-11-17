@@ -151,7 +151,7 @@ prepare(#islet_root{} = Dir) ->
 console(Ref) ->
     Self = self(),
     Pid = spawn_link(fun() -> tty_setup(Self) end),
-    console(Ref, Pid, fun io:format/1).
+    console(Ref, Pid, fun(Buf) -> io:format("~s", [Buf]) end).
 
 console(Ref, Read, Write) ->
     receive
