@@ -446,6 +446,5 @@ exec /boot/islet_exec " ++ UID ++ " " ++ GID ++ " /boot/islet
 script(islet, _Options) ->
     "#!/bin/sh
 set -e
-echo running islet echo server ...
-/bin/cat
+exec /bin/sh
 ".
