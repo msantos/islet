@@ -15,6 +15,7 @@
 -behaviour(gen_server).
 
 -include_lib("kernel/include/file.hrl").
+-include_lib("verx/include/verx.hrl").
 -include_lib("islet/include/islet.hrl").
 
 -export([
@@ -27,7 +28,8 @@
         send/2,
         recv/1, recv/2,
 
-        script/1, script/2
+        script/1, script/2,
+        console/1, console/3
     ]).
 -export([
         env_to_xml/1
@@ -145,6 +147,36 @@ prepare(#islet{sandbox = Sandbox, chroot = Chroot}) ->
     prepare(Chroot);
 prepare(#islet_root{} = Dir) ->
     chroot(Dir).
+
+console(Ref) ->
+    Self = self(),
+    Pid = spawn_link(fun() -> tty_setup(Self) end),
+    console(Ref, Pid, fun io:format/1).
+
+console(Ref, Read, Write) ->
+    receive
+        {verx, _, {#remote_message_header{
+                    type = <<?REMOTE_STREAM:32>>,
+                    status = <<?REMOTE_OK:32>>}, []}} ->
+            ok;
+        {verx, _, {#remote_message_header{
+                    type = <<?REMOTE_STREAM:32>>,
+                    status = <<?REMOTE_CONTINUE:32>>}, Buf}} ->
+            Write(Buf),
+            console(Ref, Read, Write);
+        {islet_tty, Read, Buf} ->
+            send(Ref, Buf),
+            console(Ref, Read, Write)
+    end.
+
+tty_setup(Pid) ->
+    ok = io:setopts(standard_io, [binary]),
+    tty_read(Pid).
+
+tty_read(Pid) ->
+    Buf = io:get_line(""),
+    Pid ! {islet_tty, self(), Buf},
+    tty_read(Pid).
 
 %%--------------------------------------------------------------------
 %%% API

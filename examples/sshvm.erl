@@ -12,7 +12,6 @@
 %%% ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 %%% OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 -module(sshvm).
--include_lib("verx/include/verx.hrl").
 
 -export([
         start/0, start/1,
@@ -58,33 +57,7 @@ shell(Options) ->
     spawn(fun() -> session(Options) end).
 
 session(Options) ->
-    Pid = spawn_link(fun() -> islet(Options) end),
-    ok = io:setopts(standard_io, [binary]),
-    tty_read(Pid).
-
-islet(Options) ->
     Env = islet:env(Options),
     ok = islet:prepare(Env),
     {ok, Ref} = islet:spawn(Env),
-    console_read(Ref).
-
-tty_read(Pid) ->
-    Buf = io:get_line(""),
-    Pid ! {tty_read, Buf},
-    tty_read(Pid).
-
-console_read(Ref) ->
-    receive
-        {verx, _, {#remote_message_header{
-                    type = <<?REMOTE_STREAM:32>>,
-                    status = <<?REMOTE_OK:32>>}, []}} ->
-            ok;
-        {verx, _, {#remote_message_header{
-                    type = <<?REMOTE_STREAM:32>>,
-                    status = <<?REMOTE_CONTINUE:32>>}, Buf}} ->
-            io:format(Buf),
-            console_read(Ref);
-        {tty_read, Buf} ->
-            islet:send(Ref, Buf),
-            console_read(Ref)
-    end.
+    islet:console(Ref).
