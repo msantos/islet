@@ -154,19 +154,29 @@ console(Ref) ->
     console(Ref, Pid, fun(Buf) -> io:format("~s", [Buf]) end).
 
 console(Ref, Read, Write) ->
+    Conn = getstate(Ref, conn),
+    console_xfr(Ref, Conn, Read, Write).
+
+console_xfr(Ref, Conn, Read, Write) ->
     receive
-        {verx, _, {#remote_message_header{
+        {verx, Conn, {#remote_message_header{
                     type = <<?REMOTE_STREAM:32>>,
                     status = <<?REMOTE_OK:32>>}, []}} ->
             ok;
-        {verx, _, {#remote_message_header{
+        {verx, Conn, {#remote_message_header{
                     type = <<?REMOTE_STREAM:32>>,
                     status = <<?REMOTE_CONTINUE:32>>}, Buf}} ->
             Write(Buf),
             console(Ref, Read, Write);
         {islet_tty, Read, Buf} ->
-            send(Ref, Buf),
-            console(Ref, Read, Write)
+            case send(Ref, Buf) of
+                ok ->
+                    console(Ref, Read, Write);
+                Error ->
+                    Error
+            end;
+        Any ->
+            error_logger:info_report([{any, Any}])
     end.
 
 tty_setup(Pid) ->
