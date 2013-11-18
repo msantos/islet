@@ -174,9 +174,7 @@ console_xfr(Ref, Conn, Read, Write) ->
                     console(Ref, Read, Write);
                 Error ->
                     Error
-            end;
-        Any ->
-            error_logger:info_report([{any, Any}])
+            end
     end.
 
 tty_setup(Pid) ->
