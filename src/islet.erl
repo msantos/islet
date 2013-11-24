@@ -153,7 +153,7 @@ console(Ref) ->
     Pid = spawn_link(fun() -> tty_setup(Self) end),
     console(Ref, Pid, fun(Buf) -> io:format("~s", [Buf]) end).
 
-console(Ref, Read, Write) ->
+console(Ref, Read, Write) when is_pid(Read), is_function(Write,1) ->
     Conn = getstate(Ref, conn),
     console_xfr(Ref, Conn, Read, Write).
 
